@@ -1,0 +1,7 @@
+deep-translator
+gtts
+faster-whisper
+spacy
+av<19
+# spaCy English model (install separately after the above):
+# python -m spacy download en_core_web_sm

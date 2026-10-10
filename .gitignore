@@ -1,0 +1,21 @@
+# Generated audio and output
+audio_files/
+result.json
+*.mp3
+*.wav
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# Whisper / HuggingFace model cache
+.cache/
+models/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
