@@ -1,47 +1,46 @@
 # VoiceLoop NLP
 
-Take a paragraph in any language, translate it, speak it out loud, listen to that
-audio back as text, and pull the named entities out of the result — with every
-step timed and the whole run saved as JSON.
+A small Python project that takes a paragraph, translates it, speaks it out loud,
+listens to that audio back as text, and then pulls out the names, places, companies
+and dates it finds.
 
-Started as a single 80-line script. This is version 2: the same idea split into
-one small module per library, with a translation step, error handling and
-structured output. The first version is in the commit history.
+Every step is timed, and the whole run is saved as JSON.
 
 ---
-
-## Pipeline
+## How it works
 
 ```
- Text ──► Translate ──► Text-to-Speech ──► Speech-to-Text ──► NER ──► JSON
-          (Google)       (gTTS)            (faster-whisper)   (spaCy)
-             │              │                    │              │
-             └──────────────┴────────────────────┴──────────────┘
-                        each step timed into logs.md
+ Text ──► Translate ──► Speech ──► Text again ──► Entities ──► JSON
+          (Google)      (gTTS)    (Whisper)       (spaCy)
 ```
 
-| Step | Library | Output |
+| Step | Library | What it does |
 |---|---|---|
-| Translate | `deep-translator` (Google) | English text, source language auto-detected |
-| Text → Speech | `gTTS` | `audio_files/voice.mp3` |
-| Speech → Text | `faster-whisper` (`tiny`, int8 CPU) | transcript + detected language |
-| NER | `spaCy` (`en_core_web_sm`) | `ORG`, `GPE`, `PERSON`, `DATE`… |
-| Output | — | `result.json` + timings in `logs.md` |
+| 1. Translate | deep-translator | Converts the input to English |
+| 2. Text to speech | gTTS | Saves it as an MP3 |
+| 3. Speech to text | faster-whisper | Listens to the MP3 and writes it back out |
+| 4. Entities | spaCy | Finds `PERSON`, `ORG`, `GPE`, `DATE` and more |
+
+**Why translate first?** The last two steps only understand English. spaCy's model is
+trained on English, and gTTS set to `en` mispronounces anything else. Translation is
+the bridge that lets the pipeline accept Hindi or any other language.
+
+---
 
 ## Files
 
 ```
 voiceloop-nlp/
-├── main.py                  runs the four steps in order, saves the result
-├── logger.py                writes each step's timing into logs.md
-├── modules/
-│   ├── translate.py         deep-translator
-│   ├── tts.py               gTTS
-│   ├── stt.py               faster-whisper
-│   └── ner.py               spaCy
-├── requirements.txt
-└── .gitignore
+├── main.py              runs the four steps and saves the result
+├── logger.py            writes each step's time into logs.md
+└── modules/
+    ├── translate.py     deep-translator
+    ├── tts.py           gTTS
+    ├── stt.py           faster-whisper
+    └── ner.py           spaCy
 ```
+
+Each file does one job, so you can read any one of them on its own.
 
 ---
 
@@ -49,7 +48,7 @@ voiceloop-nlp/
 
 ```bash
 python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+venv\Scripts\activate           # Mac/Linux: source venv/bin/activate
 
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
@@ -61,79 +60,69 @@ python -m spacy download en_core_web_sm
 python main.py
 ```
 
-The input paragraph and the target language sit at the top of `main.py` — change
-`paragraph` and `to_lang` there.
+Change these three lines at the top of `main.py`:
 
-Needs internet: translation and gTTS call Google, and faster-whisper downloads the
-`tiny` model on first run (cached after that).
+```python
+paragraph = "your text here"
+to_lang   = "en"     # language to translate into
+from_lang = "hi"     # language your text is in ("en" skips translation)
+```
+
+Needs internet. The Whisper model downloads once on the first run, then it is cached.
 
 ---
 
-## Why the translation step exists
+## Example
 
-Both of the later stages are English-only. `en_core_web_sm` is trained on English,
-and gTTS with `lang="en"` will mispronounce anything else. So translation is the
-bridge that lets the pipeline accept any input language.
-
-This showed up clearly in testing. Running with the network blocked, translation
-failed and the Hinglish input went straight into spaCy, which returned nonsense:
+Input:
 
 ```
-Delhi ke address -> PERSON
-Maine            -> GPE
+Last Tuesday morning, Priya Sharma and Rajesh Kumar met James Wilson
+at the Infosys campus in Bangalore.
 ```
 
-With translation working, the same sentence gives `Amazon -> ORG`, `Delhi -> GPE`,
-`Gurgaon -> GPE`. The step isn't decoration — it's what makes the rest work.
+Output:
+
+```
+Priya Sharma  -> PERSON
+Rajesh Kumar  -> PERSON
+James Wilson  -> PERSON
+Infosys       -> ORG
+Bangalore     -> GPE
+Last Tuesday  -> DATE
+```
+
+You also get:
+- `result.json` — the full run: translation, transcript, entities, timings
+- `logs.md` — how long each step took
+- `audio_files/` — the generated MP3, named with a timestamp
 
 ---
 
-## What v2 fixed
+## What I found while testing
 
-Running v1 and reading its logs carefully turned up five real problems:
+Running it on Indian text showed a few limits of spaCy's small English model:
 
-1. **One failure killed everything.** v1 had no error handling — when gTTS could not
-   reach Google, the whole script died and the NER step never ran. Each step is now
-   wrapped separately: a failed translation falls back to the original text and the
-   run continues. Tested by running with the network blocked — NER still produced
-   entities and the failures were recorded in the JSON instead of crashing.
+- **Full names only.** `Priya Sharma` is tagged `PERSON`, but `Priya` alone comes back
+  as `ORG` — even though the full name appeared earlier in the same paragraph.
+- **Crore and rupee aren't money.** `250 crore rupee` is tagged `CARDINAL`, a plain
+  number. `$500 million` works fine.
+- **Entities can merge.** `Hyderabad next month` came out as one `DATE`, and the city
+  disappeared.
+- **Mistakes travel.** spaCy never hears the audio, only what Whisper thought it
+  heard. One wrong vowel — `sapna` heard as `Subna` — was enough to turn a person into
+  a `WORK_OF_ART`.
 
-2. **A broken 0-byte MP3 was left behind.** When gTTS failed mid-save it still created
-   the file. The next run would then hand that empty file to Whisper and get a
-   confusing error. `tts.py` now deletes it and re-raises.
+All of these produced clean, confident-looking output with no errors or warnings.
+Those are the ones to watch for.
 
-3. **The timing logs were lying.** v1 loaded the Whisper model inside the timed block,
-   so the first run logged 22.97 sec for "transcription" when most of that was a
-   one-time model download. The model is now loaded once and reused.
-
-4. **The same four timing lines were copy-pasted under every step.** They live once in
-   `run_step()`.
-
-5. **Failed steps were missing from the logs.** An early version only wrote the timing
-   after a step finished, so a step that threw was never logged. `run_step()` now logs
-   the time either way — which is exactly when you want to know how long something ran
-   before giving up.
-
-## What I learned
-
-- **A pipeline is only as accurate as its weakest step.** Whatever the transcriber
-  mishears becomes the NER model's input. Speech errors don't stay in the speech layer.
-- **Small models have blind spots.** `en_core_web_sm` tags Samsung and Amazon as
-  organisations and Delhi and Gurgaon as locations, but misses "Rahul" as a `PERSON`
-  entirely — it is trained mostly on Western news text. Worth knowing before trusting
-  it on Indian data.
-- **Timing each step separately pays off.** The logs are what revealed the model-load
-  bug above. Without them I would have assumed transcription was just slow.
-- **Failing loudly beats failing silently.** Collecting errors into the output instead
-  of crashing means a partial result is still useful — and the broken output above is
-  what proved the translation step was doing real work.
+---
 
 ## Next steps
 
-- Compare `tiny` vs `base` Whisper accuracy on the same audio
-- A larger spaCy model, or a custom-trained one, for Indian names
-- Read the input from a file or a command-line argument
-- Retry the translation call before giving up on it
+- Compare the `tiny` and `base` Whisper models on the same audio
+- Try a bigger spaCy model, or train one on Indian names and amounts
+- Read the input from a file instead of editing `main.py`
 
 ## Tech
 
